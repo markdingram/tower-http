@@ -192,6 +192,10 @@ pub mod map_request_body;
 #[cfg_attr(docsrs, doc(cfg(feature = "follow-redirect")))]
 pub mod follow_redirect;
 
+#[cfg(feature = "trace")]
+#[cfg_attr(docsrs, doc(cfg(feature = "trace")))]
+pub mod trace;
+
 pub mod classify;
 pub mod services;
 
@@ -239,4 +243,16 @@ where
             BodyOrIoError::Body(inner) => inner.source(),
         }
     }
+}
+
+/// The latency unit used to report latencies by middlewares.
+#[non_exhaustive]
+#[derive(Copy, Clone, Debug)]
+pub enum LatencyUnit {
+    /// Use milliseconds.
+    Millis,
+    /// Use microseconds.
+    Micros,
+    /// Use nanoseconds.
+    Nanos,
 }
