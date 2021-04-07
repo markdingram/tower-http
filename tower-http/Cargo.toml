@@ -18,7 +18,7 @@ futures-util = { version = "0.3", default_features = false, features = [] }
 http = "0.2"
 http-body = "0.4"
 pin-project = "1"
-tower = { version = "0.4", default_features = false, features = ["util"] }
+tower = { version = "0.4.1", default_features = false, features = ["util"] }
 tower-layer = "0.3"
 tower-service = "0.3"
 
@@ -29,7 +29,6 @@ hyper = { version = "0.14", optional = true, default_features = false, features 
 iri-string = { version = "0.3", optional = true }
 tokio = { version = "1", optional = true, default_features = false }
 tokio-util = { version = "0.6", optional = true, default_features = false, features = ["io"] }
-tower = { version = "0.4.1", optional = true }
 tracing = { version = "0.1", default_features = false, optional = true }
 
 [dev-dependencies]
