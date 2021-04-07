@@ -3,6 +3,15 @@
 use http::{HeaderMap, Request, Response, StatusCode};
 use std::{convert::Infallible, marker::PhantomData};
 
+mod either;
+mod make_classifier_fn;
+mod map_failure_class;
+
+pub use self::{
+    make_classifier_fn::{make_classifier_fn, MakeClassifierFn},
+    map_failure_class::MapFailureClass,
+};
+
 /// Trait for producing response classifiers from a request.
 ///
 /// This is useful when a classifier depends on data from the request. For example, this could
@@ -121,6 +130,41 @@ pub trait ClassifyResponse<E> {
     /// Errors are always errors (doh) but sometimes it might be useful to have multiple classes of
     /// errors. A retry policy might allows retrying some errors and not others.
     fn classify_error(self, error: &E) -> Self::FailureClass;
+
+    /// Composes a function used to transform failure classifications produced by this classifier.
+    ///
+    /// # Example
+    ///
+    /// Map the output of [`ServerErrorsAsFailures`] from [`http::StatusCode`] to `u16`:
+    ///
+    /// ```rust
+    /// use http::StatusCode;
+    /// use http::Response;
+    /// use hyper::Body;
+    /// use tower_http::classify::{ClassifyResponse, ServerErrorsAsFailures, ClassifiedResponse};
+    ///
+    /// let classifier = ServerErrorsAsFailures::new().map_failure_class(|status: StatusCode| {
+    ///     status.as_u16()
+    /// });
+    /// # // help rust infer the error type
+    /// # classifier.clone().classify_error(&tower::BoxError::from("foo"));
+    ///
+    /// let response = Response::builder()
+    ///     .status(StatusCode::INTERNAL_SERVER_ERROR)
+    ///     .body(Body::empty())
+    ///     .unwrap();
+    ///
+    /// let classification = classifier.classify_response(&response);
+    ///
+    /// assert!(matches!(classification, ClassifiedResponse::Ready(Err(500))));
+    /// ```
+    fn map_failure_class<F, NewFailureClass>(self, f: F) -> MapFailureClass<Self, F, E>
+    where
+        F: FnOnce(Self::FailureClass) -> NewFailureClass,
+        Self: Sized,
+    {
+        MapFailureClass::new(self, f)
+    }
 }
 
 /// Trait for classifying end of streams (EOS) as either success or failure.
@@ -134,8 +178,17 @@ pub trait ClassifyEos<E> {
     /// Classify an error.
     ///
     /// Errors are always errors (doh) but sometimes it might be useful to have multiple classes of
-    /// errors. A retry policy might allows retrying some errors and not others.
+    /// errors. A retry policy might allow retrying some errors and not others.
     fn classify_error(self, error: &E) -> Self::FailureClass;
+
+    /// Composes a function used to transform failure classifications produced by this classifier.
+    fn map_failure_class<F, NewFailureClass>(self, f: F) -> MapFailureClass<Self, F, E>
+    where
+        F: FnOnce(Self::FailureClass) -> NewFailureClass,
+        Self: Sized,
+    {
+        MapFailureClass::new(self, f)
+    }
 }
 
 /// Result of doing a classification.
@@ -145,6 +198,40 @@ pub enum ClassifiedResponse<FailureClass, ClassifyEos> {
     Ready(Result<(), FailureClass>),
     /// We have to wait until the end of a streaming response to classify it.
     RequiresEos(ClassifyEos),
+}
+
+impl<FailureClass, ClassifyEos> ClassifiedResponse<FailureClass, ClassifyEos> {
+    /// Transform the classification using the given closure.
+    pub fn map_failure_class<F, NewFailureClass>(
+        self,
+        f: F,
+    ) -> ClassifiedResponse<NewFailureClass, ClassifyEos>
+    where
+        F: FnOnce(FailureClass) -> NewFailureClass,
+    {
+        match self {
+            ClassifiedResponse::Ready(result) => ClassifiedResponse::Ready(result.map_err(f)),
+            ClassifiedResponse::RequiresEos(classify_eos) => {
+                ClassifiedResponse::RequiresEos(classify_eos)
+            }
+        }
+    }
+
+    /// Transform the end of stream classifier using the given closure.
+    pub fn map_classify_eos<F, NewClassifyEos>(
+        self,
+        f: F,
+    ) -> ClassifiedResponse<FailureClass, NewClassifyEos>
+    where
+        F: FnOnce(ClassifyEos) -> NewClassifyEos,
+    {
+        match self {
+            ClassifiedResponse::Ready(result) => ClassifiedResponse::Ready(result),
+            ClassifiedResponse::RequiresEos(classify_eos) => {
+                ClassifiedResponse::RequiresEos(f(classify_eos))
+            }
+        }
+    }
 }
 
 /// A [`ClassifyEos`] type that can be used in [`ClassifyResponse`] implementations that never have
