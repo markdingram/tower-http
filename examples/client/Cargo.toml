@@ -1,0 +1,24 @@
+[package]
+name = "client"
+version = "0.1.0"
+authors = ["Tower Maintainers <team@tower-rs.com>"]
+edition = "2018"
+publish = false
+license = "MIT"
+
+[dependencies]
+axum = "0.4"
+async-trait = "0.1.57"
+clap = { version = "3.1.13", features = ["derive"] }
+hyper = { version = "0.14.15", features = ["full"] }
+tokio = { version = "1.2.0", features = ["full"] }
+tower = { version = "0.4.5", features = ["full"] }
+tower-http = { path = "../../tower-http", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.11", features = ["env-filter"] }
+futures = "0.3.17"
+http = "0.2.8"
+http-body = "0.4.3"
+pin-project-lite = "0.2.7" 
+thiserror = "1.0.30"
+url = "2.2.2"
