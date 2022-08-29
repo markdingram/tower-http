@@ -1,3 +1,6 @@
+//! Replace with http-body-util StreamBody once ecosystem updates
+//! https://github.com/hyperium/http-body/pull/63
+
 use std::task::{Context, Poll};
 
 use futures::stream::Stream;
