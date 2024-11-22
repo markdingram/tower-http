@@ -1,5 +1,6 @@
 use super::{Compression, Predicate};
 use crate::compression::predicate::DefaultPredicate;
+use crate::compression::CompressionLevel;
 use crate::compression_utils::AcceptEncoding;
 use tower_layer::Layer;
 
@@ -13,6 +14,7 @@ use tower_layer::Layer;
 pub struct CompressionLayer<P = DefaultPredicate> {
     accept: AcceptEncoding,
     predicate: P,
+    quality: CompressionLevel,
 }
 
 impl<S, P> Layer<S> for CompressionLayer<P>
@@ -26,12 +28,13 @@ where
             inner,
             accept: self.accept,
             predicate: self.predicate.clone(),
+            quality: self.quality,
         }
     }
 }
 
 impl CompressionLayer {
-    /// Create a new [`CompressionLayer`]
+    /// Creates a new [`CompressionLayer`].
     pub fn new() -> Self {
         Self::default()
     }
@@ -54,6 +57,19 @@ impl CompressionLayer {
     #[cfg(feature = "compression-br")]
     pub fn br(mut self, enable: bool) -> Self {
         self.accept.set_br(enable);
+        self
+    }
+
+    /// Sets whether to enable the Zstd encoding.
+    #[cfg(feature = "compression-zstd")]
+    pub fn zstd(mut self, enable: bool) -> Self {
+        self.accept.set_zstd(enable);
+        self
+    }
+
+    /// Sets the compression quality.
+    pub fn quality(mut self, quality: CompressionLevel) -> Self {
+        self.quality = quality;
         self
     }
 
@@ -81,6 +97,14 @@ impl CompressionLayer {
         self
     }
 
+    /// Disables the Zstd encoding.
+    ///
+    /// This method is available even if the `zstd` crate feature is disabled.
+    pub fn no_zstd(mut self) -> Self {
+        self.accept.set_zstd(false);
+        self
+    }
+
     /// Replace the current compression predicate.
     ///
     /// See [`Compression::compress_when`] for more details.
@@ -91,6 +115,7 @@ impl CompressionLayer {
         CompressionLayer {
             accept: self.accept,
             predicate,
+            quality: self.quality,
         }
     }
 }
@@ -98,13 +123,11 @@ impl CompressionLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::Body;
     use http::{header::ACCEPT_ENCODING, Request, Response};
-    use http_body::Body as _;
-    use hyper::Body;
-    use tokio::fs::File;
-    // for Body::data
-    use bytes::{Bytes, BytesMut};
+    use http_body_util::BodyExt;
     use std::convert::Infallible;
+    use tokio::fs::File;
     use tokio_util::io::ReaderStream;
     use tower::{Service, ServiceBuilder, ServiceExt};
 
@@ -114,14 +137,17 @@ mod tests {
         // Convert the file into a `Stream`.
         let stream = ReaderStream::new(file);
         // Convert the `Stream` into a `Body`.
-        let body = Body::wrap_stream(stream);
+        let body = Body::from_stream(stream);
         // Create response.
         Ok(Response::new(body))
     }
 
     #[tokio::test]
     async fn accept_encoding_configuration_works() -> Result<(), crate::BoxError> {
-        let deflate_only_layer = CompressionLayer::new().no_br().no_gzip();
+        let deflate_only_layer = CompressionLayer::new()
+            .quality(CompressionLevel::Best)
+            .no_br()
+            .no_gzip();
 
         let mut service = ServiceBuilder::new()
             // Compress responses based on the `Accept-Encoding` header.
@@ -138,17 +164,15 @@ mod tests {
         assert_eq!(response.headers()["content-encoding"], "deflate");
 
         // Read the body
-        let mut body = response.into_body();
-        let mut bytes = BytesMut::new();
-        while let Some(chunk) = body.data().await {
-            let chunk = chunk?;
-            bytes.extend_from_slice(&chunk[..]);
-        }
-        let bytes: Bytes = bytes.freeze();
+        let body = response.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
 
         let deflate_bytes_len = bytes.len();
 
-        let br_only_layer = CompressionLayer::new().no_gzip().no_deflate();
+        let br_only_layer = CompressionLayer::new()
+            .quality(CompressionLevel::Best)
+            .no_gzip()
+            .no_deflate();
 
         let mut service = ServiceBuilder::new()
             // Compress responses based on the `Accept-Encoding` header.
@@ -165,19 +189,51 @@ mod tests {
         assert_eq!(response.headers()["content-encoding"], "br");
 
         // Read the body
-        let mut body = response.into_body();
-        let mut bytes = BytesMut::new();
-        while let Some(chunk) = body.data().await {
-            let chunk = chunk?;
-            bytes.extend_from_slice(&chunk[..]);
-        }
-        let bytes: Bytes = bytes.freeze();
+        let body = response.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
 
         let br_byte_length = bytes.len();
 
         // check the corresponding algorithms are actually used
         // br should compresses better than deflate
         assert!(br_byte_length < deflate_bytes_len * 9 / 10);
+
+        Ok(())
+    }
+
+    /// Test ensuring that zstd compression will not exceed an 8MiB window size; browsers do not
+    /// accept responses using 16MiB+ window sizes.
+    #[tokio::test]
+    async fn zstd_is_web_safe() -> Result<(), crate::BoxError> {
+        async fn zeroes(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+            Ok(Response::new(Body::from(vec![0u8; 18_874_368])))
+        }
+        // zstd will (I believe) lower its window size if a larger one isn't beneficial and
+        // it knows the size of the input; use an 18MiB body to ensure it would want a
+        // >=16MiB window (though it might not be able to see the input size here).
+
+        let zstd_layer = CompressionLayer::new()
+            .quality(CompressionLevel::Best)
+            .no_br()
+            .no_deflate()
+            .no_gzip();
+
+        let mut service = ServiceBuilder::new().layer(zstd_layer).service_fn(zeroes);
+
+        let request = Request::builder()
+            .header(ACCEPT_ENCODING, "zstd")
+            .body(Body::empty())?;
+
+        let response = service.ready().await?.call(request).await?;
+
+        assert_eq!(response.headers()["content-encoding"], "zstd");
+
+        let body = response.into_body();
+        let bytes = body.collect().await?.to_bytes();
+        let mut dec = zstd::Decoder::new(&*bytes)?;
+        dec.window_log_max(23)?; // Limit window size accepted by decoder to 2 ^ 23 bytes (8MiB)
+
+        std::io::copy(&mut dec, &mut std::io::sink())?;
 
         Ok(())
     }

@@ -2,16 +2,16 @@
 
 use super::{body::BodyInner, CompressionBody};
 use crate::compression::predicate::Predicate;
+use crate::compression::CompressionLevel;
 use crate::compression_utils::WrapBody;
 use crate::content_encoding::Encoding;
-use futures_util::ready;
 use http::{header, HeaderMap, HeaderValue, Response};
 use http_body::Body;
 use pin_project_lite::pin_project;
 use std::{
     future::Future,
     pin::Pin,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 
 pin_project! {
@@ -23,7 +23,8 @@ pin_project! {
         #[pin]
         pub(crate) inner: F,
         pub(crate) encoding: Encoding,
-        pub(crate) predicate: P
+        pub(crate) predicate: P,
+        pub(crate) quality: CompressionLevel,
     }
 }
 
@@ -35,18 +36,25 @@ where
 {
     type Output = Result<Response<CompressionBody<B>>, E>;
 
-    #[allow(unreachable_code, unused_mut, unused_variables)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let res = ready!(self.as_mut().project().inner.poll(cx)?);
 
         // never recompress responses that are already compressed
         let should_compress = !res.headers().contains_key(header::CONTENT_ENCODING)
+            // never compress responses that are ranges
+            && !res.headers().contains_key(header::CONTENT_RANGE)
             && self.predicate.should_compress(&res);
 
         let (mut parts, body) = res.into_parts();
 
+        if should_compress {
+            parts
+                .headers
+                .append(header::VARY, header::ACCEPT_ENCODING.into());
+        }
+
         let body = match (should_compress, self.encoding) {
-            // if compression is _not_ support or the client doesn't accept it
+            // if compression is _not_ supported or the client doesn't accept it
             (false, _) | (_, Encoding::Identity) => {
                 return Poll::Ready(Ok(Response::from_parts(
                     parts,
@@ -55,15 +63,26 @@ where
             }
 
             #[cfg(feature = "compression-gzip")]
-            (_, Encoding::Gzip) => CompressionBody::new(BodyInner::gzip(WrapBody::new(body))),
+            (_, Encoding::Gzip) => {
+                CompressionBody::new(BodyInner::gzip(WrapBody::new(body, self.quality)))
+            }
             #[cfg(feature = "compression-deflate")]
-            (_, Encoding::Deflate) => CompressionBody::new(BodyInner::deflate(WrapBody::new(body))),
+            (_, Encoding::Deflate) => {
+                CompressionBody::new(BodyInner::deflate(WrapBody::new(body, self.quality)))
+            }
             #[cfg(feature = "compression-br")]
-            (_, Encoding::Brotli) => CompressionBody::new(BodyInner::brotli(WrapBody::new(body))),
+            (_, Encoding::Brotli) => {
+                CompressionBody::new(BodyInner::brotli(WrapBody::new(body, self.quality)))
+            }
+            #[cfg(feature = "compression-zstd")]
+            (_, Encoding::Zstd) => {
+                CompressionBody::new(BodyInner::zstd(WrapBody::new(body, self.quality)))
+            }
             #[cfg(feature = "fs")]
+            #[allow(unreachable_patterns)]
             (true, _) => {
                 // This should never happen because the `AcceptEncoding` struct which is used to determine
-                // `self.encoding` will only enable the different compression algorightms if the
+                // `self.encoding` will only enable the different compression algorithms if the
                 // corresponding crate feature has been enabled. This means
                 // Encoding::[Gzip|Brotli|Deflate] should be impossible at this point without the
                 // features enabled.
@@ -74,7 +93,7 @@ where
                 // to compile without this branch even though it will never be reached.
                 //
                 // To safeguard against refactors that changes this relationship or other bugs the
-                // server will return an uncompressed response instead of panicing since that could
+                // server will return an uncompressed response instead of panicking since that could
                 // become a ddos attack vector.
                 return Poll::Ready(Ok(Response::from_parts(
                     parts,
@@ -83,6 +102,7 @@ where
             }
         };
 
+        parts.headers.remove(header::ACCEPT_RANGES);
         parts.headers.remove(header::CONTENT_LENGTH);
 
         parts

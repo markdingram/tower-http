@@ -90,6 +90,7 @@ where
 ///
 /// - They're gRPC, which has its own protocol specific compression scheme.
 /// - It's an image as determined by the `content-type` starting with `image/`.
+/// - They're Server-Sent Events (SSE) as determined by the `content-type` being `text/event-stream`.
 /// - The response is less than 32 bytes.
 ///
 /// # Configuring the defaults
@@ -113,14 +114,17 @@ where
 /// [`Compression`]: super::Compression
 /// [`CompressionLayer`]: super::CompressionLayer
 #[derive(Clone)]
-pub struct DefaultPredicate(And<And<SizeAbove, NotForContentType>, NotForContentType>);
+pub struct DefaultPredicate(
+    And<And<And<SizeAbove, NotForContentType>, NotForContentType>, NotForContentType>,
+);
 
 impl DefaultPredicate {
     /// Create a new `DefaultPredicate`.
     pub fn new() -> Self {
         let inner = SizeAbove::new(SizeAbove::DEFAULT_MIN_SIZE)
             .and(NotForContentType::GRPC)
-            .and(NotForContentType::IMAGES);
+            .and(NotForContentType::IMAGES)
+            .and(NotForContentType::SSE);
         Self(inner)
     }
 }
@@ -145,7 +149,7 @@ impl Predicate for DefaultPredicate {
 pub struct SizeAbove(u16);
 
 impl SizeAbove {
-    const DEFAULT_MIN_SIZE: u16 = 32;
+    pub(crate) const DEFAULT_MIN_SIZE: u16 = 32;
 
     /// Create a new `SizeAbove` predicate that will only compress responses larger than
     /// `min_size_bytes`.
@@ -185,23 +189,38 @@ impl Predicate for SizeAbove {
 
 /// Predicate that wont allow responses with a specific `content-type` to be compressed.
 #[derive(Clone, Debug)]
-pub struct NotForContentType(Str);
+pub struct NotForContentType {
+    content_type: Str,
+    exception: Option<Str>,
+}
 
 impl NotForContentType {
     /// Predicate that wont compress gRPC responses.
     pub const GRPC: Self = Self::const_new("application/grpc");
 
     /// Predicate that wont compress images.
-    pub const IMAGES: Self = Self::const_new("image/");
+    pub const IMAGES: Self = Self {
+        content_type: Str::Static("image/"),
+        exception: Some(Str::Static("image/svg+xml")),
+    };
+
+    /// Predicate that wont compress Server-Sent Events (SSE) responses.
+    pub const SSE: Self = Self::const_new("text/event-stream");
 
     /// Create a new `NotForContentType`.
     pub fn new(content_type: &str) -> Self {
-        Self(Str::Shared(content_type.into()))
+        Self {
+            content_type: Str::Shared(content_type.into()),
+            exception: None,
+        }
     }
 
     /// Create a new `NotForContentType` from a static string.
     pub const fn const_new(content_type: &'static str) -> Self {
-        Self(Str::Static(content_type))
+        Self {
+            content_type: Str::Static(content_type),
+            exception: None,
+        }
     }
 }
 
@@ -210,11 +229,13 @@ impl Predicate for NotForContentType {
     where
         B: Body,
     {
-        let str = match &self.0 {
-            Str::Static(str) => *str,
-            Str::Shared(arc) => &*arc,
-        };
-        !content_type(response).starts_with(str)
+        if let Some(except) = &self.exception {
+            if content_type(response) == except.as_str() {
+                return true;
+            }
+        }
+
+        !content_type(response).starts_with(self.content_type.as_str())
     }
 }
 
@@ -222,6 +243,15 @@ impl Predicate for NotForContentType {
 enum Str {
     Static(&'static str),
     Shared(Arc<str>),
+}
+
+impl Str {
+    fn as_str(&self) -> &str {
+        match self {
+            Str::Static(s) => s,
+            Str::Shared(s) => s,
+        }
+    }
 }
 
 impl fmt::Debug for Str {

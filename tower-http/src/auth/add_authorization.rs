@@ -5,17 +5,19 @@
 //! # Example
 //!
 //! ```
+//! use tower_http::validate_request::{ValidateRequestHeader, ValidateRequestHeaderLayer};
 //! use tower_http::auth::AddAuthorizationLayer;
-//! use hyper::{Request, Response, Body, Error};
-//! use http::{StatusCode, header::AUTHORIZATION};
-//! use tower::{Service, ServiceExt, ServiceBuilder, service_fn};
-//! # async fn handle(request: Request<Body>) -> Result<Response<Body>, Error> {
-//! #     Ok(Response::new(Body::empty()))
+//! use http::{Request, Response, StatusCode, header::AUTHORIZATION};
+//! use tower::{Service, ServiceExt, ServiceBuilder, service_fn, BoxError};
+//! use http_body_util::Full;
+//! use bytes::Bytes;
+//! # async fn handle(request: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>, BoxError> {
+//! #     Ok(Response::new(Full::default()))
 //! # }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! # let service_that_requires_auth = tower_http::auth::RequireAuthorization::basic(
+//! # async fn main() -> Result<(), BoxError> {
+//! # let service_that_requires_auth = ValidateRequestHeader::basic(
 //! #     tower::service_fn(handle),
 //! #     "username",
 //! #     "password",
@@ -29,7 +31,7 @@
 //! let response = client
 //!     .ready()
 //!     .await?
-//!     .call(Request::new(Body::empty()))
+//!     .call(Request::new(Full::default()))
 //!     .await?;
 //!
 //! assert_eq!(StatusCode::OK, response.status());
@@ -37,6 +39,7 @@
 //! # }
 //! ```
 
+use base64::Engine as _;
 use http::{HeaderValue, Request, Response};
 use std::{
     convert::TryFrom,
@@ -44,6 +47,8 @@ use std::{
 };
 use tower_layer::Layer;
 use tower_service::Service;
+
+const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 /// Layer that applies [`AddAuthorization`] which adds authorization to all requests using the
 /// [`Authorization`] header.
@@ -69,7 +74,7 @@ impl AddAuthorizationLayer {
     /// Since the username and password is sent in clear text it is recommended to use HTTPS/TLS
     /// with this method. However use of HTTPS/TLS is not enforced by this middleware.
     pub fn basic(username: &str, password: &str) -> Self {
-        let encoded = base64::encode(format!("{}:{}", username, password));
+        let encoded = BASE64.encode(format!("{}:{}", username, password));
         let value = HeaderValue::try_from(format!("Basic {}", encoded)).unwrap();
         Self { value }
     }
@@ -80,7 +85,7 @@ impl AddAuthorizationLayer {
     ///
     /// # Panics
     ///
-    /// Panics if the token is not a valid [`HeaderValue`](http::header::HeaderValue).
+    /// Panics if the token is not a valid [`HeaderValue`].
     pub fn bearer(token: &str) -> Self {
         let value =
             HeaderValue::try_from(format!("Bearer {}", token)).expect("token is not valid header");
@@ -143,7 +148,7 @@ impl<S> AddAuthorization<S> {
     ///
     /// # Panics
     ///
-    /// Panics if the token is not a valid [`HeaderValue`](http::header::HeaderValue).
+    /// Panics if the token is not a valid [`HeaderValue`].
     pub fn bearer(inner: S, token: &str) -> Self {
         AddAuthorizationLayer::bearer(token).layer(inner)
     }
@@ -183,18 +188,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use super::*;
-    use crate::auth::RequireAuthorizationLayer;
+    use crate::test_helpers::Body;
+    use crate::validate_request::ValidateRequestHeaderLayer;
     use http::{Response, StatusCode};
-    use hyper::Body;
+    use std::convert::Infallible;
     use tower::{BoxError, Service, ServiceBuilder, ServiceExt};
 
     #[tokio::test]
     async fn basic() {
         // service that requires auth for all requests
         let svc = ServiceBuilder::new()
-            .layer(RequireAuthorizationLayer::basic("foo", "bar"))
+            .layer(ValidateRequestHeaderLayer::basic("foo", "bar"))
             .service_fn(echo);
 
         // make a client that adds auth
@@ -215,7 +220,7 @@ mod tests {
     async fn token() {
         // service that requires auth for all requests
         let svc = ServiceBuilder::new()
-            .layer(RequireAuthorizationLayer::bearer("foo"))
+            .layer(ValidateRequestHeaderLayer::bearer("foo"))
             .service_fn(echo);
 
         // make a client that adds auth
@@ -235,12 +240,12 @@ mod tests {
     #[tokio::test]
     async fn making_header_sensitive() {
         let svc = ServiceBuilder::new()
-            .layer(RequireAuthorizationLayer::bearer("foo"))
+            .layer(ValidateRequestHeaderLayer::bearer("foo"))
             .service_fn(|request: Request<Body>| async move {
                 let auth = request.headers().get(http::header::AUTHORIZATION).unwrap();
                 assert!(auth.is_sensitive());
 
-                Ok::<_, hyper::Error>(Response::new(Body::empty()))
+                Ok::<_, Infallible>(Response::new(Body::empty()))
             });
 
         let mut client = AddAuthorization::bearer(svc, "foo").as_sensitive(true);

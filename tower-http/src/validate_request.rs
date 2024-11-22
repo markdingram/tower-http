@@ -4,16 +4,17 @@
 //!
 //! ```
 //! use tower_http::validate_request::ValidateRequestHeaderLayer;
-//! use hyper::{Request, Response, Body, Error};
-//! use http::{StatusCode, header::ACCEPT};
-//! use tower::{Service, ServiceExt, ServiceBuilder, service_fn};
+//! use http::{Request, Response, StatusCode, header::ACCEPT};
+//! use http_body_util::Full;
+//! use bytes::Bytes;
+//! use tower::{Service, ServiceExt, ServiceBuilder, service_fn, BoxError};
 //!
-//! async fn handle(request: Request<Body>) -> Result<Response<Body>, Error> {
-//!     Ok(Response::new(Body::empty()))
+//! async fn handle(request: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>, BoxError> {
+//!     Ok(Response::new(Full::default()))
 //! }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn main() -> Result<(), BoxError> {
 //! let mut service = ServiceBuilder::new()
 //!     // Require the `Accept` header to be `application/json`, `*/*` or `application/*`
 //!     .layer(ValidateRequestHeaderLayer::accept("application/json"))
@@ -22,7 +23,7 @@
 //! // Requests with the correct value are allowed through
 //! let request = Request::builder()
 //!     .header(ACCEPT, "application/json")
-//!     .body(Body::empty())
+//!     .body(Full::default())
 //!     .unwrap();
 //!
 //! let response = service
@@ -36,7 +37,7 @@
 //! // Requests with an invalid value get a `406 Not Acceptable` response
 //! let request = Request::builder()
 //!     .header(ACCEPT, "text/strings")
-//!     .body(Body::empty())
+//!     .body(Full::default())
 //!     .unwrap();
 //!
 //! let response = service
@@ -54,15 +55,16 @@
 //!
 //! ```
 //! use tower_http::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
-//! use hyper::{Request, Response, Body, Error};
-//! use http::{StatusCode, header::ACCEPT};
-//! use tower::{Service, ServiceExt, ServiceBuilder, service_fn};
+//! use http::{Request, Response, StatusCode, header::ACCEPT};
+//! use http_body_util::Full;
+//! use tower::{Service, ServiceExt, ServiceBuilder, service_fn, BoxError};
+//! use bytes::Bytes;
 //!
 //! #[derive(Clone, Copy)]
 //! pub struct MyHeader { /* ...  */ }
 //!
 //! impl<B> ValidateRequest<B> for MyHeader {
-//!     type ResponseBody = Body;
+//!     type ResponseBody = Full<Bytes>;
 //!
 //!     fn validate(
 //!         &mut self,
@@ -73,13 +75,13 @@
 //!     }
 //! }
 //!
-//! async fn handle(request: Request<Body>) -> Result<Response<Body>, Error> {
-//!     Ok(Response::new(Body::empty()))
+//! async fn handle(request: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>, BoxError> {
+//!     Ok(Response::new(Full::default()))
 //! }
 //!
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn main() -> Result<(), BoxError> {
 //! let service = ServiceBuilder::new()
 //!     // Validate requests using `MyHeader`
 //!     .layer(ValidateRequestHeaderLayer::custom(MyHeader { /* ... */ }))
@@ -92,21 +94,22 @@
 //!
 //! ```
 //! use tower_http::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
-//! use hyper::{Request, Response, Body, Error};
-//! use http::{StatusCode, header::ACCEPT};
-//! use tower::{Service, ServiceExt, ServiceBuilder, service_fn};
+//! use http::{Request, Response, StatusCode, header::ACCEPT};
+//! use bytes::Bytes;
+//! use http_body_util::Full;
+//! use tower::{Service, ServiceExt, ServiceBuilder, service_fn, BoxError};
 //!
-//! async fn handle(request: Request<Body>) -> Result<Response<Body>, Error> {
+//! async fn handle(request: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>, BoxError> {
 //!     # todo!();
 //!     // ...
 //! }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn main() -> Result<(), BoxError> {
 //! let service = ServiceBuilder::new()
-//!     .layer(ValidateRequestHeaderLayer::custom(|request: &mut Request<Body>| {
+//!     .layer(ValidateRequestHeaderLayer::custom(|request: &mut Request<Full<Bytes>>| {
 //!         // Validate the request
-//!         # Ok::<_, Response<Body>>(())
+//!         # Ok::<_, Response<Full<Bytes>>>(())
 //!     }))
 //!     .service_fn(handle);
 //! # Ok(())
@@ -114,8 +117,7 @@
 //! ```
 
 use http::{header, Request, Response, StatusCode};
-use http_body::Body;
-use mime::Mime;
+use mime::{Mime, MimeIter};
 use pin_project_lite::pin_project;
 use std::{
     fmt,
@@ -150,16 +152,17 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
     /// # Example
     ///
     /// ```
-    /// use hyper::Body;
+    /// use http_body_util::Full;
+    /// use bytes::Bytes;
     /// use tower_http::validate_request::{AcceptHeader, ValidateRequestHeaderLayer};
     ///
-    /// let layer = ValidateRequestHeaderLayer::<AcceptHeader<Body>>::accept("application/json");
+    /// let layer = ValidateRequestHeaderLayer::<AcceptHeader<Full<Bytes>>>::accept("application/json");
     /// ```
     ///
     /// [`Accept`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept
     pub fn accept(value: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self::custom(AcceptHeader::new(value))
     }
@@ -211,7 +214,7 @@ impl<S, ResBody> ValidateRequestHeader<S, AcceptHeader<ResBody>> {
     /// See `AcceptHeader::new` for when this method panics.
     pub fn accept(inner: S, value: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self::custom(inner, AcceptHeader::new(value))
     }
@@ -335,7 +338,7 @@ impl<ResBody> AcceptHeader<ResBody> {
     /// Panics if `header_value` is not in the form: `type/subtype`, such as `application/json`
     fn new(header_value: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self {
             header_value: Arc::new(
@@ -367,7 +370,7 @@ impl<ResBody> fmt::Debug for AcceptHeader<ResBody> {
 
 impl<B, ResBody> ValidateRequest<B> for AcceptHeader<ResBody>
 where
-    ResBody: Body + Default,
+    ResBody: Default,
 {
     type ResponseBody = ResBody;
 
@@ -379,25 +382,24 @@ where
             .headers()
             .get_all(header::ACCEPT)
             .into_iter()
-            .flat_map(|header| {
-                header
-                    .to_str()
-                    .ok()
-                    .into_iter()
-                    .flat_map(|s| s.split(",").map(|typ| typ.trim()))
-            })
+            .filter_map(|header| header.to_str().ok())
             .any(|h| {
-                h.parse::<Mime>()
+                MimeIter::new(h)
                     .map(|mim| {
-                        let typ = self.header_value.type_();
-                        let subtype = self.header_value.subtype();
-                        match (mim.type_(), mim.subtype()) {
-                            (t, s) if t == typ && s == subtype => true,
-                            (t, mime::STAR) if t == typ => true,
-                            (mime::STAR, mime::STAR) => true,
-                            _ => false,
+                        if let Ok(mim) = mim {
+                            let typ = self.header_value.type_();
+                            let subtype = self.header_value.subtype();
+                            match (mim.type_(), mim.subtype()) {
+                                (t, s) if t == typ && s == subtype => true,
+                                (t, mime::STAR) if t == typ => true,
+                                (mime::STAR, mime::STAR) => true,
+                                _ => false,
+                            }
+                        } else {
+                            false
                         }
                     })
+                    .reduce(|acc, mim| acc || mim)
                     .unwrap_or(false)
             })
         {
@@ -413,8 +415,8 @@ where
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+    use crate::test_helpers::Body;
     use http::header;
-    use hyper::Body;
     use tower::{BoxError, ServiceBuilder, ServiceExt};
 
     #[tokio::test]
@@ -543,6 +545,40 @@ mod tests {
         let res = service.ready().await.unwrap().call(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn accepted_header_with_quotes_valid() {
+        let value = "foo/bar; parisien=\"baguette, text/html, jambon, fromage\", application/*";
+        let mut service = ServiceBuilder::new()
+            .layer(ValidateRequestHeaderLayer::accept("application/xml"))
+            .service_fn(echo);
+
+        let request = Request::get("/")
+            .header(header::ACCEPT, value)
+            .body(Body::empty())
+            .unwrap();
+
+        let res = service.ready().await.unwrap().call(request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn accepted_header_with_quotes_invalid() {
+        let value = "foo/bar; parisien=\"baguette, text/html, jambon, fromage\"";
+        let mut service = ServiceBuilder::new()
+            .layer(ValidateRequestHeaderLayer::accept("text/html"))
+            .service_fn(echo);
+
+        let request = Request::get("/")
+            .header(header::ACCEPT, value)
+            .body(Body::empty())
+            .unwrap();
+
+        let res = service.ready().await.unwrap().call(request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::NOT_ACCEPTABLE);
     }
 
     async fn echo(req: Request<Body>) -> Result<Response<Body>, BoxError> {

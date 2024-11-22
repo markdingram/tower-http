@@ -5,29 +5,204 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-# Unreleased
+# 0.6.2
+
+## Changed:
+
+- `CompressionBody<B>` now propagates `B`'s size hint in its `http_body::Body`
+  implementation, if compression is disabled ([#531])
+  - this allows a `content-length` to be included in an HTTP message with this
+    body for those cases
+
+[#531]: https://github.com/tower-rs/tower-http/pull/531
+
+# 0.6.1
+
+## Fixed
+
+- **decompression:** reuse scratch buffer to significantly reduce allocations and improve performance ([#521])
+
+[#521]: https://github.com/tower-rs/tower-http/pull/521
+
+# 0.6.0
+
+## Changed:
+
+- `body` module is disabled except for `catch-panic`, `decompression-*`, `fs`, or `limit` features (BREAKING) ([#477])
+- Update to `tower` 0.5 ([#503])
+
+## Fixed
+
+- **fs:** Precompression of static files now supports files without a file extension ([#507])
+
+[#477]: https://github.com/tower-rs/tower-http/pull/477
+[#503]: https://github.com/tower-rs/tower-http/pull/503
+[#507]: https://github.com/tower-rs/tower-http/pull/507
+
+# 0.5.2
+
+## Added:
+
+- **compression:** Will now send a `vary: accept-encoding` header on compressed responses ([#399])
+- **compression:** Support `x-gzip` as equivalent to `gzip` in `accept-encoding` request header ([#467])
+
+## Fixed
+
+- **compression:** Skip compression for range requests ([#446])
+- **compression:** Skip compression for SSE responses by default ([#465])
+- **cors:** *Actually* keep Vary headers set by the inner service when setting response headers ([#473])
+  - Version 0.5.1 intended to ship this, but the implementation was buggy and didn't actually do anything
+
+[#399]: https://github.com/tower-rs/tower-http/pull/399
+[#446]: https://github.com/tower-rs/tower-http/pull/446
+[#465]: https://github.com/tower-rs/tower-http/pull/465
+[#467]: https://github.com/tower-rs/tower-http/pull/467
+[#473]: https://github.com/tower-rs/tower-http/pull/473
+
+# 0.5.1 (January 14, 2024)
 
 ## Added
 
-- Add `NormalizePath` middleware
-- Add `ValidateRequest` middleware
+- **fs:** Support files precompressed with `zstd` in `ServeFile`
+- **trace:** Add default generic parameters for `ResponseBody` and `ResponseFuture` ([#455])
+- **trace:** Add type aliases `HttpMakeClassifier` and `GrpcMakeClassifier` ([#455])
+
+## Fixed
+
+- **cors:** Keep Vary headers set by the inner service when setting response headers ([#398])
+- **fs:** `ServeDir` now no longer redirects from `/directory` to `/directory/`
+  if `append_index_html_on_directories` is disabled ([#421])
+
+[#398]: https://github.com/tower-rs/tower-http/pull/398
+[#421]: https://github.com/tower-rs/tower-http/pull/421
+[#455]: https://github.com/tower-rs/tower-http/pull/455
+
+# 0.5.0 (November 21, 2023)
 
 ## Changed
 
-- None.
+- Bump Minimum Supported Rust Version to 1.66 ([#433])
+- Update to http-body 1.0 ([#348])
+- Update to http 1.0 ([#348])
+- Preserve service error type in RequestDecompression ([#368])
+
+## Fixed
+
+- Accepts range headers with ranges where the end of range goes past the end of the document by bumping
+http-range-header to `0.4`
+
+[#418]: https://github.com/tower-rs/tower-http/pull/418
+[#433]: https://github.com/tower-rs/tower-http/pull/433
+[#348]: https://github.com/tower-rs/tower-http/pull/348
+[#368]: https://github.com/tower-rs/tower-http/pull/368
+
+# 0.4.2 (July 19, 2023)
+
+## Added
+
+- **cors:** Add support for private network preflights ([#373])
+- **compression:** Implement `Default` for `DecompressionBody` ([#370])
+
+## Changed
+
+- **compression:** Update to async-compression 0.4 ([#371])
+
+## Fixed
+
+- **compression:** Override default brotli compression level 11 -> 4 ([#356])
+- **trace:** Simplify dynamic tracing level application ([#380])
+- **normalize_path:** Fix path normalization for preceding slashes ([#359])
+
+[#356]: https://github.com/tower-rs/tower-http/pull/356
+[#359]: https://github.com/tower-rs/tower-http/pull/359
+[#370]: https://github.com/tower-rs/tower-http/pull/370
+[#371]: https://github.com/tower-rs/tower-http/pull/371
+[#373]: https://github.com/tower-rs/tower-http/pull/373
+[#380]: https://github.com/tower-rs/tower-http/pull/380
+
+# 0.4.1 (June 20, 2023)
+
+## Added
+
+- **request_id:** Derive `Default` for `MakeRequestUuid` ([#335])
+- **fs:** Derive `Default` for `ServeFileSystemResponseBody` ([#336])
+- **compression:** Expose compression quality on the CompressionLayer ([#333])
+
+## Fixed
+
+- **compression:** Improve parsing of `Accept-Encoding` request header ([#220])
+- **normalize_path:** Fix path normalization of index route ([#347])
+- **decompression:** Enable `multiple_members` for `GzipDecoder` ([#354])
+
+[#347]: https://github.com/tower-rs/tower-http/pull/347
+[#333]: https://github.com/tower-rs/tower-http/pull/333
+[#220]: https://github.com/tower-rs/tower-http/pull/220
+[#335]: https://github.com/tower-rs/tower-http/pull/335
+[#336]: https://github.com/tower-rs/tower-http/pull/336
+[#354]: https://github.com/tower-rs/tower-http/pull/354
+
+# 0.4.0 (February 24, 2023)
+
+## Added
+
+- **decompression:** Add `RequestDecompression` middleware ([#282])
+- **compression:** Implement `Default` for `CompressionBody` ([#323])
+- **compression, decompression:** Support zstd (de)compression ([#322])
+
+## Changed
+
+- **serve_dir:** `ServeDir` and `ServeFile`'s error types are now `Infallible` and any IO errors
+  will be converted into responses. Use `try_call` to generate error responses manually (BREAKING) ([#283])
+- **serve_dir:** `ServeDir::fallback` and `ServeDir::not_found_service` now requires
+  the fallback service to use `Infallible` as its error type (BREAKING) ([#283])
+- **compression, decompression:** Tweak prefered compression encodings ([#325])
 
 ## Removed
 
-- None.
+- Removed `RequireAuthorization` in favor of `ValidateRequest` (BREAKING) ([#290])
+
+## Fixed
+
+- **serve_dir:** Don't include identity in Content-Encoding header ([#317])
+- **compression:** Do compress SVGs ([#321])
+- **serve_dir:** In `ServeDir`, convert `io::ErrorKind::NotADirectory` to `404 Not Found` ([#331])
+
+[#282]: https://github.com/tower-rs/tower-http/pull/282
+[#283]: https://github.com/tower-rs/tower-http/pull/283
+[#290]: https://github.com/tower-rs/tower-http/pull/290
+[#317]: https://github.com/tower-rs/tower-http/pull/317
+[#321]: https://github.com/tower-rs/tower-http/pull/321
+[#322]: https://github.com/tower-rs/tower-http/pull/322
+[#323]: https://github.com/tower-rs/tower-http/pull/323
+[#325]: https://github.com/tower-rs/tower-http/pull/325
+[#331]: https://github.com/tower-rs/tower-http/pull/331
+
+# 0.3.5 (December 02, 2022)
+
+## Added
+
+- Add `NormalizePath` middleware ([#275])
+- Add `ValidateRequest` middleware ([#289])
+- Add `RequestBodyTimeout` middleware ([#303])
+
+## Changed
+
+- Bump Minimum Supported Rust Version to 1.60 ([#299])
 
 ## Fixed
 
 - **trace:** Correctly identify gRPC requests in default `on_response` callback ([#278])
 - **cors:** Panic if a wildcard (`*`) is passed to `AllowOrigin::list`. Use
   `AllowOrigin::any()` instead ([#285])
+- **serve_dir:** Call the fallback on non-uft8 request paths ([#310])
 
+[#275]: https://github.com/tower-rs/tower-http/pull/275
 [#278]: https://github.com/tower-rs/tower-http/pull/278
 [#285]: https://github.com/tower-rs/tower-http/pull/285
+[#289]: https://github.com/tower-rs/tower-http/pull/289
+[#299]: https://github.com/tower-rs/tower-http/pull/299
+[#303]: https://github.com/tower-rs/tower-http/pull/303
+[#310]: https://github.com/tower-rs/tower-http/pull/310
 
 # 0.3.4 (June 06, 2022)
 
